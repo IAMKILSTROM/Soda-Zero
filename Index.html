@@ -1,0 +1,458 @@
+```react
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Droplets, 
+  Footprints, 
+  Flame, 
+  Trophy, 
+  AlertCircle, 
+  CheckCircle2, 
+  XCircle,
+  Share2,
+  Settings,
+  Bell,
+  Info,
+  ShieldCheck,
+  User,
+  ExternalLink
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  collection, 
+  onSnapshot, 
+  query, 
+  updateDoc 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+
+// --- Firebase Setup ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'vitals-veins-pwa';
+
+// --- Constants ---
+const WATER_GOAL = 2500; 
+const STEP_GOAL = 6000;
+const TRUTH_BOMBS = [
+  "Liquid sugar causes non-alcoholic fatty liver disease faster than almost any solid food.",
+  "Alcohol is a Group 1 carcinogen, the same category as tobacco and asbestos.",
+  "Diet sodas can trick your brain into wanting more high-calorie sweets.",
+  "Chronic soda consumption is a leading cause of painful kidney stones.",
+  "Just 2 weeks of heavy drinking can cause significant fat buildup in your liver."
+];
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState('dashboard'); // dashboard, leaderboard, profile, info
+  const [profile, setProfile] = useState({
+    streak: 0,
+    points: 0,
+    waterLevel: 0,
+    steps: 0,
+    lastUpdate: null,
+    avoidanceChecked: false,
+    avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Health"
+  });
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [showFact, setShowFact] = useState(true);
+  const [factIndex] = useState(Math.floor(Math.random() * TRUTH_BOMBS.length));
+  const [coachMessage, setCoachMessage] = useState("Let's stay pure today.");
+
+  // --- Auth & Initialization ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+      }
+    };
+    initAuth();
+    return onAuthStateChanged(auth, setUser);
+  }, []);
+
+  // --- Profile Sync ---
+  useEffect(() => {
+    if (!user) return;
+
+    const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile');
+    const unsubscribe = onSnapshot(profileRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const lastDate = data.lastUpdate?.toDate?.()?.toDateString() || new Date(data.lastUpdate).toDateString();
+        const todayDate = new Date().toDateString();
+        
+        if (lastDate !== todayDate) {
+          const resetData = {
+            ...data,
+            waterLevel: 0,
+            steps: 0,
+            avoidanceChecked: false,
+            lastUpdate: new Date()
+          };
+          setProfile(resetData);
+          updateDoc(profileRef, resetData);
+        } else {
+          setProfile(data);
+        }
+      } else {
+        const initialProfile = {
+          uid: user.uid,
+          streak: 0,
+          points: 0,
+          waterLevel: 0,
+          steps: 0,
+          avoidanceChecked: false,
+          lastUpdate: new Date(),
+          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`
+        };
+        setDoc(profileRef, initialProfile);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- Leaderboard Sync ---
+  useEffect(() => {
+    if (!user) return;
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const docs = snapshot.docs.map(d => d.data());
+      setLeaderboard(docs.sort((a, b) => b.points - a.points).slice(0, 10));
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- Coach Temperament Logic ---
+  useEffect(() => {
+    const hour = new Date().getHours();
+    if (profile.waterLevel === 0 && hour > 10) {
+      setCoachMessage("YOU ARE SERIOUSLY DEHYDRATED, HYDRATE NOW!! 🥵");
+    } else if (profile.steps < 1000 && hour > 14) {
+      setCoachMessage("Why are you sitting? Your legs were made for 6,000 steps. MOVE! 🏃‍♂️");
+    } else if (profile.waterLevel >= WATER_GOAL && profile.steps >= STEP_GOAL && profile.avoidanceChecked) {
+      setCoachMessage("Excellent. Pharm. Bola would be proud. 🛡️");
+    } else {
+      setCoachMessage("Stay away from the poison. Water is your ally.");
+    }
+  }, [profile]);
+
+  const updateSteps = async (amount) => {
+    if (!user) return;
+    const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile');
+    const newSteps = (profile.steps || 0) + amount;
+    await updateDoc(profileRef, { steps: newSteps });
+    
+    if (newSteps % 200 === 0) {
+      const leaderRef = doc(db, 'artifacts', appId, 'public', 'data', 'leaderboard', user.uid);
+      await setDoc(leaderRef, {
+        uid: user.uid,
+        points: profile.points + (newSteps * 0.05),
+        streak: profile.streak,
+        avatar: profile.avatar,
+        displayName: user.uid.substring(0, 8)
+      }, { merge: true });
+    }
+  };
+
+  const addWater = async (amount) => {
+    if (!user) return;
+    const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile');
+    const newLevel = Math.min(profile.waterLevel + amount, 5000);
+    await updateDoc(profileRef, { waterLevel: newLevel });
+  };
+
+  const toggleAvoidance = async () => {
+    if (!user) return;
+    const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile');
+    const newState = !profile.avoidanceChecked;
+    
+    let newPoints = profile.points;
+    let newStreak = profile.streak;
+
+    if (newState && profile.waterLevel >= WATER_GOAL && profile.steps >= STEP_GOAL) {
+      newPoints += 150 * (1 + (profile.streak * 0.02));
+      newStreak += 1;
+    }
+
+    await updateDoc(profileRef, { 
+      avoidanceChecked: newState,
+      points: newPoints,
+      streak: newStreak
+    });
+
+    const leaderRef = doc(db, 'artifacts', appId, 'public', 'data', 'leaderboard', user.uid);
+    await setDoc(leaderRef, {
+      uid: user.uid,
+      points: newPoints,
+      streak: newStreak,
+      avatar: profile.avatar,
+      displayName: user.uid.substring(0, 8)
+    }, { merge: true });
+  };
+
+  const waterPercent = Math.min((profile.waterLevel / WATER_GOAL) * 100, 100);
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-slate-100 font-sans pb-28 selection:bg-emerald-500/30">
+      {/* Top Professional Header */}
+      <header className="p-6 pt-8 flex justify-between items-center border-b border-white/5 bg-black/40 backdrop-blur-md sticky top-0 z-50">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-blue-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+            <ShieldCheck className="text-white" size={24} />
+          </div>
+          <div>
+            <h1 className="text-lg font-black tracking-tight text-white uppercase">Vitals & Veins</h1>
+            <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-widest leading-none">by Pharm. Bola</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-full border border-white/10">
+          <Flame size={16} className="text-orange-500" fill="currentColor" />
+          <span className="font-black text-sm">{profile.streak}</span>
+        </div>
+      </header>
+
+      <main className="p-4 max-w-lg mx-auto">
+        {view === 'dashboard' && (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Truth Bomb */}
+            {showFact && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-3xl p-6 mb-6 relative overflow-hidden group shadow-2xl">
+                <div className="absolute top-0 left-0 w-1.5 h-full bg-red-600"></div>
+                <h2 className="text-red-500 font-black text-[10px] uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
+                  <AlertCircle size={14} /> Critical Health Fact
+                </h2>
+                <p className="text-slate-100 text-lg leading-snug font-bold">
+                  "{TRUTH_BOMBS[factIndex]}"
+                </p>
+                <button 
+                  onClick={() => setShowFact(false)}
+                  className="mt-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest hover:text-white transition-colors"
+                >
+                  Confirm Understanding
+                </button>
+              </div>
+            )}
+
+            {/* Aggressive Coach Message */}
+            <div className={`mb-6 p-5 rounded-3xl border transition-all duration-500 flex items-center gap-4 ${
+              coachMessage.includes('!!') 
+              ? 'bg-orange-500/20 border-orange-500 animate-pulse' 
+              : 'bg-emerald-500/10 border-emerald-500/20'
+            }`}>
+              <div className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${
+                coachMessage.includes('!!') ? 'bg-orange-500' : 'bg-emerald-500'
+              }`}>
+                <Bell size={24} className="text-white" />
+              </div>
+              <p className="font-extrabold text-sm sm:text-base leading-tight italic">"{coachMessage}"</p>
+            </div>
+
+            {/* Hydration Interactive Section */}
+            <div className="bg-slate-900/40 rounded-[2.5rem] p-8 border border-white/5 mb-6 flex flex-col items-center shadow-xl">
+              <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-[0.3em] mb-6">Daily Hydration Goal</h3>
+              <div className="relative w-36 h-64 mb-8">
+                <svg viewBox="0 0 100 200" className="w-full h-full drop-shadow-[0_0_15px_rgba(59,130,246,0.3)]">
+                  <defs>
+                    <clipPath id="bottleClip">
+                      <path d="M35 5 Q35 0 50 0 Q65 0 65 5 L68 35 Q85 45 85 65 L85 185 Q85 200 70 200 L30 200 Q15 200 15 185 L15 65 Q15 45 32 35 Z" />
+                    </clipPath>
+                  </defs>
+                  <path 
+                    d="M35 5 Q35 0 50 0 Q65 0 65 5 L68 35 Q85 45 85 65 L85 185 Q85 200 70 200 L30 200 Q15 200 15 185 L15 65 Q15 45 32 35 Z" 
+                    fill="#111" 
+                    stroke="#333" 
+                    strokeWidth="2"
+                  />
+                  <g clipPath="url(#bottleClip)">
+                    <rect 
+                      x="0" 
+                      y={200 - (200 * (waterPercent / 100))} 
+                      width="100" 
+                      height="200" 
+                      fill="#3b82f6" 
+                      className="transition-all duration-1000"
+                    />
+                    <path 
+                      d="M0 10 Q25 0 50 10 T100 10 V0 H0 Z" 
+                      fill="#60a5fa" 
+                      transform={`translate(0, ${200 - (200 * (waterPercent / 100)) - 5})`}
+                      className="animate-pulse"
+                    />
+                  </g>
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span className="text-3xl font-black text-white">{profile.waterLevel}</span>
+                  <span className="text-[10px] font-black text-blue-300 uppercase">ml / 2500</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4 w-full">
+                <button onClick={() => addWater(250)} className="bg-white/5 border border-white/10 p-4 rounded-2xl font-black hover:bg-white/10 active:scale-95 transition-all">+250ml</button>
+                <button onClick={() => addWater(500)} className="bg-blue-600 p-4 rounded-2xl font-black hover:bg-blue-500 active:scale-95 transition-all shadow-lg shadow-blue-500/20">+500ml</button>
+              </div>
+            </div>
+
+            {/* Steps Section */}
+            <div className="bg-slate-900/40 rounded-[2.5rem] p-8 border border-white/5 mb-6 shadow-xl">
+              <div className="flex justify-between items-end mb-4">
+                <div>
+                  <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-[0.3em] mb-1">Movement Floor</h3>
+                  <p className="text-4xl font-black text-white">{profile.steps.toLocaleString()}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Goal</p>
+                  <p className="text-xl font-black text-slate-400">6,000</p>
+                </div>
+              </div>
+              <div className="h-3 bg-white/5 rounded-full overflow-hidden mb-6">
+                <div 
+                  className="h-full bg-gradient-to-r from-emerald-500 to-blue-500 transition-all duration-700"
+                  style={{ width: `${Math.min((profile.steps / STEP_GOAL) * 100, 100)}%` }}
+                ></div>
+              </div>
+              <button 
+                onClick={() => updateSteps(500)} 
+                className="w-full py-4 border border-white/10 rounded-2xl font-bold text-slate-400 hover:text-white transition-colors"
+              >
+                Simulate Activity Step
+              </button>
+            </div>
+
+            {/* The Big One: Avoidance */}
+            <button 
+              onClick={toggleAvoidance}
+              className={`w-full p-10 rounded-[3rem] border-2 transition-all group flex flex-col items-center gap-4 ${
+                profile.avoidanceChecked 
+                ? 'bg-emerald-500/20 border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.2)]' 
+                : 'bg-black border-white/10 hover:border-emerald-500/50'
+              }`}
+            >
+              <div className={`w-20 h-20 rounded-full flex items-center justify-center transition-transform group-active:scale-90 ${
+                profile.avoidanceChecked ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-600'
+              }`}>
+                {profile.avoidanceChecked ? <CheckCircle2 size={48} /> : <ShieldCheck size={48} />}
+              </div>
+              <div className="text-center">
+                <h4 className="text-2xl font-black uppercase tracking-tighter">
+                  {profile.avoidanceChecked ? "Victory Declared" : "Daily Pledge"}
+                </h4>
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-1">
+                  I HAVE NOT TOUCHED POISON TODAY
+                </p>
+              </div>
+            </button>
+          </div>
+        )}
+
+        {view === 'leaderboard' && (
+          <div className="animate-in fade-in slide-in-from-right-4 duration-500">
+            <h2 className="text-2xl font-black mb-6 uppercase tracking-tight">World Ranking</h2>
+            <div className="space-y-3">
+              {leaderboard.map((entry, idx) => (
+                <div key={entry.uid} className={`flex items-center justify-between p-5 rounded-3xl border ${
+                  entry.uid === user?.uid ? 'bg-emerald-500/20 border-emerald-500 shadow-lg shadow-emerald-500/10' : 'bg-white/5 border-white/5'
+                }`}>
+                  <div className="flex items-center gap-4">
+                    <span className={`w-6 font-black text-lg ${idx < 3 ? 'text-yellow-400' : 'text-slate-600'}`}>{idx + 1}</span>
+                    <img src={entry.avatar} alt="" className="w-12 h-12 rounded-2xl bg-black border border-white/10" />
+                    <div>
+                      <p className="font-black text-white">{entry.displayName || 'Warrior'}</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase">{entry.streak} Day Streak</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-black text-emerald-400">{Math.floor(entry.points)}</p>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase">XP</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {view === 'info' && (
+          <div className="animate-in fade-in slide-in-from-left-4 duration-500 space-y-6">
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-3xl p-8 text-center">
+              <img 
+                src={`https://api.dicebear.com/7.x/initials/svg?seed=PB&backgroundColor=10b981`} 
+                alt="Pharm Bola" 
+                className="w-24 h-24 rounded-full mx-auto mb-4 border-4 border-emerald-500"
+              />
+              <h2 className="text-2xl font-black text-white">Pharm. Bola</h2>
+              <p className="text-emerald-400 font-bold uppercase tracking-widest text-xs mb-4">Lead Health Strategist</p>
+              <p className="text-slate-300 text-sm leading-relaxed">
+                Pharmacist Boladale Kosisochukwu Dehinsilu is dedicated to eradicating the metabolic plague of soda and alcohol addiction through disciplined lifestyle engineering.
+              </p>
+              <div className="flex justify-center gap-4 mt-6">
+                <a href="https://twitter.com" className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-xl text-xs font-bold border border-white/10">
+                  <ExternalLink size={14} /> Twitter (X)
+                </a>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/40 border border-white/5 rounded-3xl p-6">
+              <h3 className="font-black uppercase tracking-widest text-xs text-slate-500 mb-4">Scientific Protocol</h3>
+              <ul className="space-y-4">
+                <li className="flex gap-3">
+                  <div className="w-6 h-6 rounded bg-blue-500 shrink-0 flex items-center justify-center text-[10px] font-black">1</div>
+                  <p className="text-sm text-slate-300"><span className="text-white font-bold">2.5L Hydration:</span> Required for optimal renal clearance and metabolic support.</p>
+                </li>
+                <li className="flex gap-3">
+                  <div className="w-6 h-6 rounded bg-emerald-500 shrink-0 flex items-center justify-center text-[10px] font-black">2</div>
+                  <p className="text-sm text-slate-300"><span className="text-white font-bold">6,000 Steps:</span> The human baseline for lymphatic drainage and blood glucose management.</p>
+                </li>
+                <li className="flex gap-3">
+                  <div className="w-6 h-6 rounded bg-red-500 shrink-0 flex items-center justify-center text-[10px] font-black">3</div>
+                  <p className="text-sm text-slate-300"><span className="text-white font-bold">Zero-Toxin:</span> Complete abstinence from ethanol and refined high-fructose corn syrup.</p>
+                </li>
+              </ul>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Modern Navigation Bar */}
+      <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[90%] max-w-sm bg-black/60 backdrop-blur-2xl border border-white/10 rounded-[2.5rem] p-2 flex justify-between shadow-2xl z-50">
+        <button 
+          onClick={() => setView('dashboard')}
+          className={`p-4 rounded-full transition-all flex items-center gap-2 ${view === 'dashboard' ? 'bg-emerald-500 text-white px-8' : 'text-slate-500'}`}
+        >
+          <Flame size={24} />
+          {view === 'dashboard' && <span className="font-black uppercase text-xs tracking-widest">Live</span>}
+        </button>
+        <button 
+          onClick={() => setView('leaderboard')}
+          className={`p-4 rounded-full transition-all flex items-center gap-2 ${view === 'leaderboard' ? 'bg-emerald-500 text-white px-8' : 'text-slate-500'}`}
+        >
+          <Trophy size={24} />
+          {view === 'leaderboard' && <span className="font-black uppercase text-xs tracking-widest">Global</span>}
+        </button>
+        <button 
+          onClick={() => setView('info')}
+          className={`p-4 rounded-full transition-all flex items-center gap-2 ${view === 'info' ? 'bg-emerald-500 text-white px-8' : 'text-slate-500'}`}
+        >
+          <Info size={24} />
+          {view === 'info' && <span className="font-black uppercase text-xs tracking-widest">Rules</span>}
+        </button>
+      </nav>
+    </div>
+  );
+}
+
+```
