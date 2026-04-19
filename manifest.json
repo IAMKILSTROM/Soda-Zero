@@ -1,0 +1,18 @@
+{
+  "background_color": "#f5f5f5",
+  "dir": "ltr",
+  "display": "standalone",
+  "name": "SODAZERO",
+  "orientation": "portrait",
+  "scope": "/",
+  "short_name": "SodaZero",
+  "start_url": "https://iamkilstrom.github.io/Soda-Zero/",
+  "theme_color": "#c53c3c",
+  "id": "SodaZero",
+  "description": "SodaZero is an app to help people avoid Sodas and alcohol through gamified streaks and daily healthy tasks.",
+  "lang": "en",
+  "display_override": [
+    "minimal-ui",
+    "window-controls-overlay"
+  ]
+}
